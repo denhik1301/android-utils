@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -28,7 +29,6 @@ import static java.util.Objects.requireNonNull;
  */
 public class CollectionUtils {
 
-
 	public static <T> int indexOf(T[] array, T value) {
 		for (int i = 0; i < array.length; i++) {
 			if (Objects.equals(value, array[i])) return i;
@@ -41,6 +41,10 @@ public class CollectionUtils {
 			if (value == array[i]) return i;
 		}
 		return -1;
+	}
+
+	public static boolean contains(int[] array, int value) {
+		return indexOf(array, value) != -1;
 	}
 
 	public static <T> boolean contains(T[] array, T value) {
@@ -213,6 +217,15 @@ public class CollectionUtils {
 		}
 
 		return a;
+	}
+
+	public static <T> LinkedHashSet<T> newLinkedHashSet(int size) {
+		return new LinkedHashSet<>((int) (size / 0.75 + 1));
+	}
+
+	public static <T> void addAll(Collection<T> c, @Nullable T[] values) {
+		if(values == null) return;
+		for(int i = 0; i < values.length; i++) c.add(values[i]);
 	}
 
 	public static <T, R, TC extends Collection<? extends T>, RC extends Collection<R>>

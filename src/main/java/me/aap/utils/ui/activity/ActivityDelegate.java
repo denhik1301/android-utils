@@ -2,8 +2,12 @@ package me.aap.utils.ui.activity;
 
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.content.Intent;
+import android.content.res.Resources;
 import android.content.res.Resources.Theme;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -19,17 +23,24 @@ import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+
+import java.io.File;
 import java.util.Collection;
 import java.util.LinkedList;
 
-import me.aap.utils.BuildConfig;
+import javax.annotation.Nonnull;
+
 import me.aap.utils.R;
 import me.aap.utils.app.App;
+import me.aap.utils.async.FutureSupplier;
+import me.aap.utils.async.Promise;
 import me.aap.utils.event.EventBroadcaster;
 import me.aap.utils.function.Function;
 import me.aap.utils.function.IntObjectFunction;
 import me.aap.utils.function.Supplier;
 import me.aap.utils.log.Log;
+import me.aap.utils.text.TextUtils;
 import me.aap.utils.ui.fragment.ActivityFragment;
 import me.aap.utils.ui.fragment.FilePickerFragment;
 import me.aap.utils.ui.fragment.GenericDialogFragment;
@@ -49,7 +60,7 @@ import static android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
 import static android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
 import static android.view.View.SYSTEM_UI_FLAG_LOW_PROFILE;
 import static android.view.View.SYSTEM_UI_FLAG_VISIBLE;
-import static me.aap.utils.collection.CollectionUtils.forEach;
+import static me.aap.utils.async.Completed.completedVoid;
 import static me.aap.utils.ui.UiUtils.ID_NULL;
 import static me.aap.utils.ui.activity.ActivityListener.ACTIVITY_DESTROY;
 import static me.aap.utils.ui.activity.ActivityListener.ACTIVITY_FINISH;
@@ -58,9 +69,8 @@ import static me.aap.utils.ui.activity.ActivityListener.FRAGMENT_CHANGED;
 /**
  * @author Andrey Pavlenko
  */
-public abstract class ActivityDelegate extends Fragment implements
-		EventBroadcaster<ActivityListener>, Thread.UncaughtExceptionHandler {
-	private static Function<Context, ActivityDelegate> contextToDelegate;
+public abstract class ActivityDelegate implements EventBroadcaster<ActivityListener>,
+		Thread.UncaughtExceptionHandler {
 	private static final int FULLSCREEN_FLAGS = SYSTEM_UI_FLAG_LAYOUT_STABLE |
 			SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
 			SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
@@ -69,17 +79,18 @@ public abstract class ActivityDelegate extends Fragment implements
 			SYSTEM_UI_FLAG_HIDE_NAVIGATION |
 			SYSTEM_UI_FLAG_IMMERSIVE |
 			SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+	private static Function<Context, ActivityDelegate> contextToDelegate;
 	private final Collection<ListenerRef<ActivityListener>> listeners = new LinkedList<>();
-	private AppActivity activity;
+	@Nonnull
+	private final AppActivity activity;
 	private OverlayMenu activeMenu;
-	private boolean recreate;
 	private boolean fullScreen;
 	private boolean backPressed;
 	private int activeFragmentId = ID_NULL;
 	private int activeNavItemId = ID_NULL;
 
-	public ActivityDelegate() {
-		this.recreate = true;
+	public ActivityDelegate(@Nonnull AppActivity activity) {
+		this.activity = activity;
 	}
 
 	@IdRes
@@ -88,95 +99,95 @@ public abstract class ActivityDelegate extends Fragment implements
 	@StringRes
 	protected abstract int getExitMsg();
 
-	@SuppressWarnings("unchecked")
-	public static <D extends ActivityDelegate> D create(Supplier<D> constructor, AppActivity activity) {
-		FragmentManager fm = activity.getSupportFragmentManager();
-		ActivityDelegate delegate = (ActivityDelegate) fm.findFragmentByTag("ActivityDelegate");
-
-		if ((delegate == null) || delegate.recreate) {
-			delegate = constructor.get();
-			delegate.recreate = false;
-			delegate.activity = activity;
-			FragmentTransaction tr = fm.beginTransaction();
-			forEach(fm.getFragments(), tr::remove);
-			tr.add(delegate, "ActivityDelegate");
-			tr.commit();
-		} else {
-			delegate.activity = activity;
-		}
-
-		return (D) delegate;
-	}
-
 	public static void setContextToDelegate(Function<Context, ActivityDelegate> contextToDelegate) {
 		ActivityDelegate.contextToDelegate = contextToDelegate;
 	}
 
+	@NonNull
 	public static ActivityDelegate get(Context ctx) {
 		if (ctx instanceof AppActivity) {
-			return ((AppActivity) ctx).getActivityDelegate();
+			return ((AppActivity) ctx).getActivityDelegate().getOrThrow();
 		} else if (ctx instanceof ContextWrapper) {
 			do {
 				ctx = ((ContextWrapper) ctx).getBaseContext();
-				if (ctx instanceof AppActivity) return ((AppActivity) ctx).getActivityDelegate();
+				if (ctx instanceof AppActivity)
+					return ((AppActivity) ctx).getActivityDelegate().getOrThrow();
 			} while (ctx instanceof ContextWrapper);
 		}
 
-		if (contextToDelegate != null) {
-			return contextToDelegate.apply(ctx);
-		} else {
-			throw new IllegalArgumentException("Unsupported context: " + ctx);
+		Function<Context, ActivityDelegate> f = contextToDelegate;
+
+		if (f != null) {
+			ActivityDelegate d = f.apply(ctx);
+			if (d != null) return d;
 		}
+
+		IllegalArgumentException ex = new IllegalArgumentException("Unsupported context: " + ctx);
+		Log.e(ex, "Activity delegate not found. contextToDelegate = ", f);
+		throw ex;
 	}
 
-	@Override
-	public void onCreate(@Nullable Bundle savedInstanceState) {
-		super.onCreate(savedInstanceState);
-		setRetainInstance(true);
+	@Nonnull
+	public AppActivity getAppActivity() {
+		return activity;
 	}
 
-	protected void onActivityCreate(Bundle savedInstanceState) {
+	@Nonnull
+	public Context getContext() {
+		return getAppActivity().getContext();
+	}
+
+	protected void onActivityCreate(@Nullable Bundle savedInstanceState) {
+		Log.d("onActivityCreate");
+		setUncaughtExceptionHandler();
+	}
+
+	protected void setUncaughtExceptionHandler() {
 		Thread.setDefaultUncaughtExceptionHandler(this);
-		setTheme();
 	}
 
 	protected void onActivityStart() {
+		Log.d("onActivityStart");
 	}
 
 	protected void onActivityResume() {
+		Log.d("onActivityResume");
 		setSystemUiVisibility();
 	}
 
 	protected void onActivityPause() {
+		Log.d("onActivityPause");
 	}
 
 	@SuppressWarnings("unused")
 	protected void onActivitySaveInstanceState(@NonNull Bundle outState) {
+		Log.d("onActivitySaveInstanceState");
 	}
 
 	protected void onActivityStop() {
+		Log.d("onActivityStop");
 	}
 
 	protected void onActivityDestroy() {
+		Log.d("onActivityDestroy");
 		fireBroadcastEvent(ACTIVITY_DESTROY);
-		activity = null;
 		activeMenu = null;
 		fullScreen = false;
 		backPressed = false;
 		activeFragmentId = ID_NULL;
 		activeNavItemId = ID_NULL;
+		removeListeners(this);
+	}
 
-		if (BuildConfig.D) {
-			removeBroadcastListeners(l -> {
-				if (l instanceof View) {
-					throw new IllegalStateException("View has not been removed from activity listeners: " + l);
-				}
-				return false;
-			});
-		}
+	protected static <T> void removeListeners(EventBroadcaster<T> b) {
+		b.removeBroadcastListeners(l -> {
+			Log.d(new IllegalStateException(), "Listener ", l, " has not been removed from ", b);
+			return true;
+		});
 	}
 
 	protected void onActivityFinish() {
+		Log.d("onActivityFinish");
 	}
 
 	public void finish() {
@@ -184,24 +195,66 @@ public abstract class ActivityDelegate extends Fragment implements
 		getAppActivity().finish();
 	}
 
-	@Override
-	public void uncaughtException(@NonNull Thread t, @NonNull Throwable ex) {
-		RuntimeException err = new RuntimeException("Uncaught exception in thread " + t, ex);
-		Log.e(err);
+	public void recreate() {
+		Log.d("Recreating");
+		getAppActivity().recreate();
 	}
 
-	public AppActivity getAppActivity() {
-		return activity;
+	@Override
+	public void uncaughtException(@NonNull Thread t, @NonNull Throwable err) {
+		Log.e(err, "Uncaught exception in thread ", t);
+		sendCrashReport(err);
+	}
+
+	protected FutureSupplier<Void> sendCrashReport(Throwable err) {
+		App app = App.get();
+		String email = app.getCrashReportEmail();
+		if (email == null) return completedVoid();
+		CharSequence appName = getString(App.get().getApplicationInfo().labelRes);
+		String subj = appName + " crash report";
+		String body = TextUtils.toString(err);
+		String uri = "mailto:" + email +
+				"?subject=" + Uri.encode(subj) +
+				"&body=" + Uri.encode(body);
+		Intent i = new Intent(Intent.ACTION_SENDTO, Uri.parse(uri));
+		Context ctx = getContext();
+		if (i.resolveActivity(ctx.getPackageManager()) == null) return completedVoid();
+
+		Promise<Void> p = new Promise<>();
+		Thread t = new Thread() {
+			@Override
+			public void run() {
+				Looper.prepare();
+				new MaterialAlertDialogBuilder(ctx)
+						.setTitle(appName)
+						.setMessage(appName + " has been crashed.\nSend crash report?")
+						.setNegativeButton(android.R.string.cancel, (d, w) -> p.cancel())
+						.setPositiveButton(android.R.string.ok, (d, w) -> p.complete(null))
+						.setCancelable(false)
+						.show();
+				Looper.loop();
+			}
+		};
+
+		t.start();
+		p.onSuccess(v -> {
+			File logFile = app.getLogFile();
+			if (logFile != null)
+				i.putExtra(Intent.EXTRA_STREAM, Uri.parse("file://" + logFile.getAbsolutePath()));
+			i.putExtra(Intent.EXTRA_SUBJECT, subj);
+			i.putExtra(Intent.EXTRA_TEXT, body);
+			startActivity(Intent.createChooser(i, "Send crash report"));
+		}).thenRun(() -> {
+			finish();
+			Looper l = Looper.myLooper();
+			if (l != null) l.quitSafely();
+		});
+
+		return p;
 	}
 
 	public Theme getTheme() {
 		return getAppActivity().getTheme();
-	}
-
-	@Override
-	public Context getContext() {
-		AppActivity a = getAppActivity();
-		return (a == null) ? super.getContext() : a.getContext();
 	}
 
 	public Window getWindow() {
@@ -323,11 +376,8 @@ public abstract class ActivityDelegate extends Fragment implements
 	}
 
 	public boolean isRootPage() {
-		int navId = getActiveNavItemId();
-		if (navId == ID_NULL) return true;
-
 		ActivityFragment f = getActiveFragment();
-		return (f != null) && f.isRootPage() && (navId == f.getFragmentId());
+		return (f != null) && f.isRootPage() && (getActiveNavItemId() == f.getFragmentId());
 	}
 
 	public void onBackPressed() {
@@ -404,7 +454,6 @@ public abstract class ActivityDelegate extends Fragment implements
 
 	public void setFullScreen(boolean fullScreen) {
 		AppActivity a = getAppActivity();
-		if (a == null) return;
 		this.fullScreen = fullScreen;
 		View decor = a.getWindow().getDecorView();
 		decor.setSystemUiVisibility(fullScreen ? FULLSCREEN_FLAGS : SYSTEM_UI_FLAG_VISIBLE);
@@ -431,5 +480,32 @@ public abstract class ActivityDelegate extends Fragment implements
 
 	public boolean onKeyLongPress(int keyCode, KeyEvent keyEvent, IntObjectFunction<KeyEvent, Boolean> next) {
 		return next.apply(keyCode, keyEvent);
+	}
+
+	public void startActivity(Intent intent) {
+		startActivity(intent, null);
+	}
+
+	public void startActivity(Intent intent, @Nullable Bundle options) {
+		getAppActivity().startActivity(intent, options);
+	}
+
+	public FutureSupplier<Intent> startActivityForResult(Supplier<Intent> intent) {
+		return getAppActivity().startActivityForResult(intent);
+	}
+
+	@NonNull
+	public Resources getResources() {
+		return getContext().getResources();
+	}
+
+	@NonNull
+	public final String getString(@StringRes int resId) {
+		return getResources().getString(resId);
+	}
+
+	@NonNull
+	public final String getString(@StringRes int resId, @Nullable Object... formatArgs) {
+		return getResources().getString(resId, formatArgs);
 	}
 }

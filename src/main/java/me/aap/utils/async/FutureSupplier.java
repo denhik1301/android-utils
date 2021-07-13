@@ -235,8 +235,15 @@ public interface FutureSupplier<T> extends Future<T>, CheckedSupplier<T, Throwab
 
 	default T peek(@Nullable Supplier<? extends T> ifNotDone) {
 		if (isDone()) {
-			if (!isFailed()) return getOrThrow();
-			Log.e(getFailure());
+			if (!isFailed()) {
+				try {
+					return get();
+				} catch (Throwable ex) {
+					Log.e(ex);
+				}
+			} else {
+				Log.e(getFailure());
+			}
 		}
 
 		return (ifNotDone != null) ? ifNotDone.get() : null;
@@ -244,14 +251,18 @@ public interface FutureSupplier<T> extends Future<T>, CheckedSupplier<T, Throwab
 
 
 	default T getOrThrow() throws RuntimeException {
-		return getOrThrow(RuntimeException::new);
-	}
-
-	default <E extends Throwable> T getOrThrow(Function<Throwable, E> map) throws E {
-		try {
-			return get();
-		} catch (Throwable ex) {
-			throw map.apply(ex);
+		if (isDone()) {
+			if (!isFailed()) {
+				try {
+					return get();
+				} catch (Throwable ex) {
+					throw new RuntimeException(ex);
+				}
+			} else {
+				throw new RuntimeException(getFailure());
+			}
+		} else {
+			throw new RuntimeException("FutureSupplier is not done");
 		}
 	}
 
@@ -300,16 +311,30 @@ public interface FutureSupplier<T> extends Future<T>, CheckedSupplier<T, Throwab
 		return ProxySupplier.create(this, t -> t, onFail);
 	}
 
-	default FutureSupplier<T> ifNull(Consumer<T> f) {
+	default FutureSupplier<T> ifNull(CheckedSupplier<T, Throwable> f) {
 		if (isDone()) {
 			if (!isFailed()) {
 				T v = peek();
-				if (v == null) f.accept(v);
+				if (v == null) {
+					try {
+						return completed(f.get());
+					} catch (Throwable ex) {
+						return failed(ex);
+					}
+				}
 			}
 			return this;
 		} else {
-			return onSuccess(v -> {
-				if (v != null) f.accept(v);
+			return then(v -> {
+				if (v == null) {
+					try {
+						return completed(f.get());
+					} catch (Throwable ex) {
+						return failed(ex);
+					}
+				} else {
+					return completed(v);
+				}
 			});
 		}
 	}
